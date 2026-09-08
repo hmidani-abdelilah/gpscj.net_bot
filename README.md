@@ -21,6 +21,8 @@ ALLOWED_USER_IDS=123456789,987654321
 
 ```bash
 .venv/bin/python telegram_bot.py
+nohup .venv/bin/python3 telegram_bot.py
+
 ```
 
 أرسل `/start` إلى البوت من حساب مسموح. لتشغيل تقرير GPSCJ من الطرفية:

@@ -1,0 +1,6 @@
+# Direct dependencies, pinned to the locally tested environment.
+requests==2.34.2
+urllib3==2.7.0
+python-dotenv==1.2.2
+python-telegram-bot==22.8
+staticmap==0.5.7

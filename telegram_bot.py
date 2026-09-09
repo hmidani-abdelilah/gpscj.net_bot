@@ -21,6 +21,7 @@ import html
 import logging
 import os
 import re
+import secrets
 import tempfile
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,7 @@ from telegram.ext import (
 )
 
 import gps
+import gps_commands
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -156,6 +158,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("📡 تنبيهات الكهرباء والاتصال", callback_data="health")],
         [InlineKeyboardButton("📍 موقع مباشر متجدد", callback_data="live_location")],
+        [InlineKeyboardButton("🔧 التحكم بالوقود عبر GPSCJ", callback_data="relay_menu")],
         [InlineKeyboardButton("🏎️ تنبيه تخطي السرعة", callback_data="limit_speed")],
         [InlineKeyboardButton("🔋 تنبيه انخفاض جهد البطارية", callback_data="limit_battery")],
     ]
@@ -1168,6 +1171,7 @@ async def start(
 ) -> None:
     if not await _authorize(update, context):
         return
+    context.user_data.pop("relay_pending", None)
     context.user_data["limit_input"] = None
     context.user_data["history_state"] = None
     context.user_data["geofence_state"] = None
@@ -1221,6 +1225,9 @@ async def button_handler(
     if not data.startswith("geofence_radius:"):
         context.user_data["geofence_center"] = None
 
+    if not data.startswith("relay_"):
+        context.user_data.pop("relay_pending", None)
+
     if data == "menu":
         context.user_data["current_view"] = None
         await query.edit_message_text(
@@ -1246,6 +1253,11 @@ async def button_handler(
                 reply_markup=main_menu_keyboard(),
             )
         return
+
+    if data.startswith("relay_"):
+        await _relay_handler(query, context, data)
+        return
+    context.user_data.pop("relay_pending", None)
 
     if data.startswith("limit_"):
         await _limit_handler(query, context, data)
@@ -1514,6 +1526,88 @@ async def _geofence_stop(
 # =============================================================================
 # MAP & HISTORY HANDLERS (تتبع مباشر + سجل الحركة)
 # =============================================================================
+
+def _relay_keyboard(command_id=None):
+    rows = [
+        [InlineKeyboardButton("⛔ قطع الوقود", callback_data="relay_cut"),
+         InlineKeyboardButton("✅ إعادة الوقود", callback_data="relay_restore")],
+        [InlineKeyboardButton("↩️ القائمة الرئيسية", callback_data="menu")],
+    ]
+    if command_id is not None:
+        rows.insert(0, [InlineKeyboardButton("📨 قراءة رد الجهاز", callback_data=f"relay_status:{command_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _relay_handler(query, context, action):
+    loop = asyncio.get_running_loop()
+    if action.startswith('relay_status:'):
+        context.user_data.pop('relay_pending', None)
+        last = context.user_data.get('relay_last_command')
+        if not last or action != f"relay_status:{last['id']}":
+            await query.edit_message_text('هذا الأمر غير متاح في جلسة البوت الحالية.', reply_markup=_relay_keyboard())
+            return
+        await query.edit_message_text('⏳ جارٍ قراءة رد الجهاز...')
+        try:
+            reply = await asyncio.to_thread(gps_commands.command_response, last['id'], last['target'])
+            text = (f"رد المنصة للأمر {last['id']}:\n{reply[:2500]}\n\nتحقق من حالة المركبة فعليًا؛ الرد وحده لا يثبت عمل الريليه."
+                    if reply else f"لم يظهر رد الجهاز للأمر {last['id']} بعد. يمكنك قراءة الرد مجددًا؛ لم يُعَد إرسال الأمر.")
+        except Exception as exc:
+            text = str(exc) if isinstance(exc, gps_commands.CommandError) else 'تعذرت قراءة رد الجهاز؛ حاول قراءة الرد لاحقًا.'
+        await query.edit_message_text(text, reply_markup=_relay_keyboard(last['id']))
+        return
+    if action in ("relay_menu", "relay_cancel"):
+        context.user_data.pop("relay_pending", None)
+        await query.edit_message_text(
+            "🔧 التحكم بالوقود عبر GPSCJ\nيلزم ريليه فصل مركب ومتوافق. القطع متاح فقط عند تأكيد توقف المركبة وإطفاء المحرك ببيانات حديثة. لا تحرك المركبة حتى التأكد من نتيجة الأمر؛ قد تتأخر المنصة في تنفيذه.",
+            reply_markup=_relay_keyboard(context.user_data.get('relay_last_command', {}).get('id')),
+        )
+        return
+    if action in ("relay_cut", "relay_restore"):
+        context.user_data.pop("relay_pending", None)
+        kind = action.removeprefix("relay_")
+        await query.edit_message_text("⏳ جارٍ التحقق من الجهاز وحالته...")
+        try:
+            target = await asyncio.to_thread(gps_commands.relay_command, kind)
+        except Exception as exc:
+            text = str(exc) if isinstance(exc, gps_commands.CommandError) else "تعذر التحقق من المنصة؛ لم يُرسل أمر."
+            await query.edit_message_text(text, reply_markup=_relay_keyboard())
+            return
+        nonce = secrets.token_hex(8)
+        context.user_data["relay_pending"] = dict(kind=kind, target=target, nonce=nonce, expires=loop.time()+60)
+        label = "قطع الوقود" if kind == "cut" else "إعادة الوقود"
+        details = (
+            "تأكد من أن المركبة متوقفة بأمان وأن ريليه الفصل مركب. يُعاد فحص الحالة قبل الإرسال. "
+            if kind == "cut" else
+            "ستُرسل إعادة الوقود دون اشتراط موقع حديث أو حالة توقف. قبول المنصة لا يضمن وصول الأمر للجهاز فورًا. "
+        )
+        await query.edit_message_text(
+            f"تأكيد {label} للجهاز المنتهي بـ {target['sn'][-4:]} (موديل {target['model']}).\n"
+            + details + "التأكيد صالح لمدة دقيقة.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"تأكيد {label}", callback_data=f"relay_confirm:{nonce}")],
+                [InlineKeyboardButton("إلغاء", callback_data="relay_cancel")],
+            ]),
+        )
+        return
+    if action.startswith("relay_confirm:"):
+        pending = context.user_data.pop("relay_pending", None)
+        if not pending or action != f"relay_confirm:{pending['nonce']}" or loop.time() > pending['expires']:
+            await query.edit_message_text("التأكيد منتهي أو مستخدم. افتح طلبًا جديدًا.", reply_markup=_relay_keyboard())
+            return
+        lock = context.application.bot_data.setdefault("relay_lock", asyncio.Lock())
+        if lock.locked():
+            await query.edit_message_text("يوجد أمر قيد المعالجة؛ لم يُرسل طلبك.", reply_markup=_relay_keyboard())
+            return
+        async with lock:
+            await query.edit_message_text("⏳ جارٍ إعادة التحقق وإرسال الأمر مرة واحدة...")
+            try:
+                command_id = await asyncio.to_thread(gps_commands.relay_command, pending['kind'], pending['target'])
+                context.user_data['relay_last_command'] = {'id': command_id, 'target': pending['target']}
+                text = f"استلمت GPSCJ الأمر رقم {command_id}. هذا قبول للإرسال وليس تأكيدًا لتنفيذ القطع أو الإعادة. تحقق من نتيجة الأمر في المنصة قبل تحريك المركبة أو تكراره."
+            except Exception as exc:
+                text = str(exc) if isinstance(exc, gps_commands.CommandError) else "تعذر إتمام الطلب. تحقق من سجل أوامر GPSCJ قبل إعادة المحاولة."
+            await query.edit_message_text(text, reply_markup=_relay_keyboard(context.user_data.get('relay_last_command', {}).get('id')))
+
 
 def _live_location_keyboard():
     return InlineKeyboardMarkup([

@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import secrets
+import sys
 import tempfile
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
@@ -44,6 +45,7 @@ from telegram.ext import (
 
 import gps
 import gps_commands
+import scheduler_bot
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -158,6 +160,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("📡 تنبيهات الكهرباء والاتصال", callback_data="health")],
         [InlineKeyboardButton("📍 موقع مباشر متجدد", callback_data="live_location")],
+        [InlineKeyboardButton("⏰ مجدول المهام", callback_data="sched:menu")],
         [InlineKeyboardButton("🔧 التحكم بالوقود عبر GPSCJ", callback_data="relay_menu")],
         [InlineKeyboardButton("🏎️ تنبيه تخطي السرعة", callback_data="limit_speed")],
         [InlineKeyboardButton("🔋 تنبيه انخفاض جهد البطارية", callback_data="limit_battery")],
@@ -1149,6 +1152,7 @@ async def _authorize(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
 
 
 async def _shutdown_geofences(application: Application) -> None:
+    await scheduler_bot.shutdown(application)
     tasks = list(application.bot_data.get("geofence_tasks", set()))
     for task in tasks:
         task.cancel()
@@ -1171,6 +1175,7 @@ async def start(
 ) -> None:
     if not await _authorize(update, context):
         return
+    context.user_data.pop("schedule_draft", None)
     context.user_data.pop("relay_pending", None)
     context.user_data["limit_input"] = None
     context.user_data["history_state"] = None
@@ -1227,6 +1232,11 @@ async def button_handler(
 
     if not data.startswith("relay_"):
         context.user_data.pop("relay_pending", None)
+
+    if data.startswith("sched:"):
+        await scheduler_bot.handler(update, context, query, sys.modules[__name__])
+        return
+    context.user_data.pop("schedule_draft", None)
 
     if data == "menu":
         context.user_data["current_view"] = None
@@ -2012,6 +2022,9 @@ async def text_handler(
     """يعالج الإحداثيات أو التاريخ المدخل يدوياً أثناء انتظارها فقط."""
     if not await _authorize(update, context):
         return
+    if context.user_data.get("schedule_draft"):
+        await scheduler_bot.text_input(update, context)
+        return
     kind = context.user_data.get("limit_input")
     if kind in _LIMIT_LABELS:
         await _limit_input(update, context, kind)
@@ -2086,6 +2099,10 @@ async def text_handler(
 # MAIN
 # =============================================================================
 
+async def _startup_scheduler(application):
+    await scheduler_bot.startup(application, sys.modules[__name__])
+
+
 def main() -> None:
     gps.validate_configuration()
     allowed_user_ids = _allowed_user_ids()
@@ -2107,6 +2124,7 @@ def main() -> None:
         .build()
     )
 
+    application.post_init = _startup_scheduler
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("id", show_user_id))
     application.bot_data["allowed_user_ids"] = allowed_user_ids

@@ -1381,11 +1381,9 @@ async def button_handler(
             # إرسال رسالة الكرون تاب
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text="البوت تم إيقافه. سيعاد تشغيله تلقائياً عبر crontab."
+                text="البوت تم إيقافه. سيعاد تشغيله تلقائياً عبر crontab."            
             )
             await asyncio.sleep(2)  # الانتظار قليلاً قبل إنهاء العملية
-            await query.answer("البوت تم إيقافه. سيتم إعادة تشغيله تلقائياً.", show_alert=True)
-            
             
             # إنهاء العملية
             import subprocess

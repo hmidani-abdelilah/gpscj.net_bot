@@ -183,7 +183,8 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔧 التحكم بالوقود عبر GPSCJ", callback_data="relay_menu")],
         [InlineKeyboardButton("🏎️ تنبيه تخطي السرعة", callback_data="limit_speed")],
         [InlineKeyboardButton("🔋 تنبيه انخفاض جهد البطارية", callback_data="limit_battery")],
-        [InlineKeyboardButton("إغلاق البوت 🔒", callback_data="close_bot")],
+        [InlineKeyboardButton("🔒 إغلاق البوت", callback_data="close_bot")],
+        [InlineKeyboardButton(text="🆔 فحص بروسيس",callback_data="pid_bot")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -1396,6 +1397,42 @@ async def button_handler(
             parse_mode=ParseMode.HTML,
             reply_markup=main_menu_keyboard()
         )
+    elif data == "pid_bot":
+        # 1. Supprimer le message actuel (si c'est ce que vous souhaitez)
+        try:
+            await query.query.delete_message()
+        except Exception:
+            pass  # Évite un plantage si le message est déjà supprimé ou trop ancien
+
+        # 2. Récupérer le VRAI numéro PID du bot
+        import subprocess
+        try:
+            # pgrep -f récupère les PID. On décode le résultat en texte (.strip() enlève les sauts de ligne)
+            result = subprocess.run(["pgrep", "-f", "telegram_bot.py"], capture_output=True, text=True)
+            pid_bot = result.stdout.strip()
+            
+            # Si plusieurs processus ou si aucun n'est trouvé
+            if not pid_bot:
+                pid_bot = "غير معروف (لم يتم العثور عليه)"
+            else:
+                # Remplacer les sauts de ligne par des virgules si plusieurs PID sont trouvés
+                pid_bot = pid_bot.replace("\n", ", ")
+                
+        except Exception as e:
+            pid_bot = f"خطأ أثناء جلب الرقم: {e}"
+
+        back_button = [InlineKeyboardButton("↩️ القائمة الرئيسية", callback_data="menu")]
+
+        # 3. Envoyer un NOUVEAU message avec le PID 
+        # (Puisqu'on a supprimé le message d'origine, on utilise send_message)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"رقم PID للبوت هو: `{pid_bot}`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=InlineKeyboardMarkup([back_button])
+        )
+        
+
 
 
 

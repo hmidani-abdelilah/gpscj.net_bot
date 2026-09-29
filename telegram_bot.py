@@ -19,6 +19,7 @@ import io
 import xml.etree.ElementTree as ET
 import html
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import secrets
@@ -43,6 +44,9 @@ from telegram.ext import (
     filters,
 )
 
+import subprocess
+
+
 import gps
 import gps_commands
 import scheduler_bot
@@ -60,10 +64,18 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 # LOGGING
 # =============================================================================
 
+handlers = [
+    # Limite le fichier à 5 Mo et garde un historique des 3 derniers fichiers
+    RotatingFileHandler("/home/xq/gps/gps/telegram_bot.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"),
+    logging.StreamHandler()
+]
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
+    handlers=handlers
 )
+
 logger = logging.getLogger("telegram_bot")
 # HTTP request URLs can contain the bot token.
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -75,6 +87,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 WELCOME_TEXT = (
     "🚗 <b>مرحباً بك في بوت تتبع المركبات</b>\n\n"
     "اختر أحد الخيارات من القائمة أدناه:"
+)
+
+HELP_TEXT = (
+    "للمساعدة، يمكنك استخدام الأوامر التالية:\n"
+    "/start - بدء البوت\n"
+    "/help - عرض المساعدة\n"
+    "/settings - إعدادات البوت"
 )
 
 _ERROR_TEXT = (
@@ -164,6 +183,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔧 التحكم بالوقود عبر GPSCJ", callback_data="relay_menu")],
         [InlineKeyboardButton("🏎️ تنبيه تخطي السرعة", callback_data="limit_speed")],
         [InlineKeyboardButton("🔋 تنبيه انخفاض جهد البطارية", callback_data="limit_battery")],
+        [InlineKeyboardButton("إغلاق البوت 🔒", callback_data="close_bot")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -1188,7 +1208,18 @@ async def start(
         reply_markup=main_menu_keyboard(),
     )
 
-
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not await _authorize(update, context):
+        return
+    await update.message.reply_text(
+        HELP_TEXT,
+        parse_mode=ParseMode.HTML,
+        #reply_markup=main_menu_keyboard(),
+    )
+    
 async def _show_view(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1325,6 +1356,49 @@ async def button_handler(
     if data in VIEWS:
         context.user_data["current_view"] = data
         await _show_view(update, context, data)
+    
+    elif data == "close_bot":
+            await query.query.delete_message()
+            # حذف الرسالة الحالية التي تحتوي على زر "إغلاق البوت"
+            #await query.message.delete()
+            
+            # إنشاء أزرار التأكيد
+            yes_no = [
+                InlineKeyboardButton(text="نعم", callback_data="confirm_close_bot"),
+                InlineKeyboardButton(text="لا", callback_data="cancel_close_bot")
+            ]
+            
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="هل أنت متأكد من إيقاف البوت؟",
+                reply_markup=InlineKeyboardMarkup([yes_no])
+            )
+            
+    elif data == "confirm_close_bot":
+            # تعديل نص الرسالة الحالية لتأكيد الإغلاق
+            await query.edit_message_text(text="البوت سيغلق الآن. إلى اللقاء!")
+            
+            # إرسال رسالة الكرون تاب
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="البوت تم إيقافه. سيعاد تشغيله تلقائياً عبر crontab."
+            )
+            await asyncio.sleep(2)  # الانتظار قليلاً قبل إنهاء العملية
+            await query.answer("البوت تم إيقافه. سيتم إعادة تشغيله تلقائياً.", show_alert=True)
+            
+            
+            # إنهاء العملية
+            import subprocess
+            subprocess.run(["pkill", "-f", "telegram_bot.py"])
+
+    elif data == "cancel_close_bot":
+        # إذا اختار "لا"، نعدل الرسالة لتخبره بالإلغاء ونظهر القائمة الرئيسية مجدداً
+        await query.edit_message_text(
+            text="تم إلغاء إيقاف البوت.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_keyboard()
+        )
+
 
 
 # =============================================================================
@@ -2126,6 +2200,7 @@ def main() -> None:
 
     application.post_init = _startup_scheduler
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("id", show_user_id))
     application.bot_data["allowed_user_ids"] = allowed_user_ids
     application.add_error_handler(_error_handler)

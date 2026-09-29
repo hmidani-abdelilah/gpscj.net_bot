@@ -21,6 +21,7 @@ else
         echo "Failed to start the application. at $(date "+%Y-%m-%d %H:%M:%S")" WARNING >> ~/gpscj.net_bot/mon_journal.log
     fi 
 fi
+#bash $(pgrep -f "~/gpscj.net_bot/telegram_bot.py") 
 #kill -9 $(pgrep -f "~/gpscj.net_bot/telegram_bot.py")
 # crontab
-## * * * * * bash ~//run.sh
+## * * * * * bash ~/gpscj.net_bot/run.sh
